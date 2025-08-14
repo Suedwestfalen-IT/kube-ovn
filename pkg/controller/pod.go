@@ -520,6 +520,10 @@ func (c *Controller) handleAddOrUpdatePod(key string) (err error) {
 	}
 
 	// check if route subnet is need.
+	err = c.reconcileNAT(pod, podNets)
+	if err != nil {
+		klog.Error(err)
+	}
 	return c.reconcileRouteSubnets(pod, needRouteSubnets(pod, podNets))
 }
 
@@ -693,6 +697,54 @@ func (c *Controller) reconcileAllocateSubnets(pod *v1.Pod, needAllocatePodNets [
 		c.initVpcNatGatewayQueue.Add(vpcGwName)
 	}
 	return pod, nil
+}
+
+func (c *Controller) reconcileNAT(pod *v1.Pod, routePodNets []*kubeovnNet) error {
+	if len(routePodNets) == 0 {
+		return nil
+	}
+
+	namespace, err := c.namespacesLister.Get(pod.Namespace)
+	podName := c.getNameByPod(pod)
+	if err != nil {
+		klog.Errorf("failed to get namespace %s for pod %s: %v", pod.Namespace, pod.Name, err)
+		return err
+	}
+
+	var podIP string
+	for _, podNet := range routePodNets {
+		podIP = pod.Annotations[fmt.Sprintf(util.IPAddressAnnotationTemplate, podNet.ProviderName)]
+		if c.config.EnableEipSnat {
+			for ipStr := range strings.SplitSeq(podIP, ",") {
+				if eip := pod.Annotations[util.EipAnnotation]; eip == "" {
+					if err = c.OVNNbClient.DeleteNats(c.config.ClusterRouter, ovnnb.NATTypeDNATAndSNAT, ipStr); err != nil {
+						klog.Errorf("failed to delete nat rules: %v", err)
+					}
+				} else if util.CheckProtocol(eip) == util.CheckProtocol(ipStr) {
+					if err = c.OVNNbClient.UpdateDnatAndSnat(c.config.ClusterRouter, eip, ipStr, fmt.Sprintf("%s.%s", podName, pod.Namespace), pod.Annotations[util.MacAddressAnnotation], c.ExternalGatewayType); err != nil {
+						klog.Errorf("failed to add nat rules, %v", err)
+						return err
+					}
+				}
+				var eip string
+				if eip = pod.Annotations[util.SnatAnnotation]; eip == "" {
+					eip = namespace.Annotations[util.SnatAnnotation]
+				}
+
+				if eip == "" {
+					if err = c.OVNNbClient.DeleteNats(c.config.ClusterRouter, ovnnb.NATTypeSNAT, ipStr); err != nil {
+						klog.Errorf("failed to delete nat rules: %v", err)
+					}
+				} else if util.CheckProtocol(eip) == util.CheckProtocol(ipStr) {
+					if err = c.OVNNbClient.UpdateSnat(c.config.ClusterRouter, eip, ipStr); err != nil {
+						klog.Errorf("failed to add nat rules, %v", err)
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // do the same thing as update pod
@@ -925,35 +977,7 @@ func (c *Controller) reconcileRouteSubnets(pod *v1.Pod, needRoutePodNets []*kube
 				}
 			}
 
-			if c.config.EnableEipSnat {
-				for ipStr := range strings.SplitSeq(podIP, ",") {
-					if eip := pod.Annotations[util.EipAnnotation]; eip == "" {
-						if err = c.OVNNbClient.DeleteNats(c.config.ClusterRouter, ovnnb.NATTypeDNATAndSNAT, ipStr); err != nil {
-							klog.Errorf("failed to delete nat rules: %v", err)
-						}
-					} else if util.CheckProtocol(eip) == util.CheckProtocol(ipStr) {
-						if err = c.OVNNbClient.UpdateDnatAndSnat(c.config.ClusterRouter, eip, ipStr, fmt.Sprintf("%s.%s", podName, pod.Namespace), pod.Annotations[util.MacAddressAnnotation], c.ExternalGatewayType); err != nil {
-							klog.Errorf("failed to add nat rules, %v", err)
-							return err
-						}
-					}
-					var eip string
-					if eip = pod.Annotations[util.SnatAnnotation]; eip == "" {
-						eip = namespace.Annotations[util.SnatAnnotation]
-					}
-
-					if eip == "" {
-						if err = c.OVNNbClient.DeleteNats(c.config.ClusterRouter, ovnnb.NATTypeSNAT, ipStr); err != nil {
-							klog.Errorf("failed to delete nat rules: %v", err)
-						}
-					} else if util.CheckProtocol(eip) == util.CheckProtocol(ipStr) {
-						if err = c.OVNNbClient.UpdateSnat(c.config.ClusterRouter, eip, ipStr); err != nil {
-							klog.Errorf("failed to add nat rules, %v", err)
-							return err
-						}
-					}
-				}
-			}
+			
 		}
 
 		if pod.Annotations[fmt.Sprintf(util.ActivationStrategyTemplate, podNet.ProviderName)] != "" {
