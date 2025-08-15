@@ -83,8 +83,13 @@ func (c *Controller) enqueueUpdateNamespace(oldObj, newObj any) {
 		// handle SnatAnnotation changes
 		if newNs.Annotations[util.SnatAnnotation] != oldNs.Annotations[util.SnatAnnotation] {
 			pods, err := c.podsLister.Pods(newNs.Name).List(labels.Everything())
+			if err != nil {
+				klog.Errorf("no pods found for namespace %s", newNs.Name)
+				return
+			}
 			for _, p := range pods {
-				c.addOrUpdatePodQueue.Add(cache.MetaObjectToName(p).String())
+				key := cache.MetaObjectToName(p).String()
+				c.addOrUpdatePodQueue.Add(key)
 			}
 		}
 	}
