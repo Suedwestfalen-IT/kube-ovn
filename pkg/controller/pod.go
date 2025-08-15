@@ -519,12 +519,13 @@ func (c *Controller) handleAddOrUpdatePod(key string) (err error) {
 		}
 	}
 
-	// check if route subnet is need.
-	err = c.reconcileNAT(pod, podNets)
-	if err != nil {
+	// check if route subnet is need. 
+	if err = c.reconcileRouteSubnets(pod, needRouteSubnets(pod, podNets)); err != nil {
 		klog.Error(err)
 	}
-	return c.reconcileRouteSubnets(pod, needRouteSubnets(pod, podNets))
+
+	// check SNAT for pods
+	return c.reconcileNAT(pod, podNets)
 }
 
 // do the same thing as add pod
